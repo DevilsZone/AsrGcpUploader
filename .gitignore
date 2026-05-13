@@ -1,0 +1,6 @@
+.gitignore
+cred.json
+.env
+output
+.venv
+.idea

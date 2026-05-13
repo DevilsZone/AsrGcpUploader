@@ -1,0 +1,7 @@
+datasets[audio]
+huggingface_hub
+google-cloud-storage
+python-dotenv
+soundfile
+tqdm
+numpy
