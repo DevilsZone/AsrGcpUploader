@@ -2,7 +2,7 @@ import argparse
 import tempfile
 from pathlib import Path
 
-from src.audio_utils import convert_to_mp3, probe_audio, write_audio_value_to_wav
+from src.audio_utils import probe_audio, write_audio_value_to_wav
 from src.checkpoint_utils import load_checkpoint, save_checkpoint
 from src.config import load_config
 from src.gcs_utils import GcsClient
@@ -79,30 +79,21 @@ def process_one_row(
     )
 
     shard = record_id[:2]
-    audio_blob_name = f"{run_name}/audio/{shard}/{record_id}.mp3"
+    audio_blob_name = f"{run_name}/audio/{shard}/{record_id}.wav"
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = Path(temp_dir)
         temp_wav_path = temp_dir_path / f"{record_id}.wav"
-        temp_mp3_path = temp_dir_path / f"{record_id}.mp3"
 
-        source_audio_path = write_audio_value_to_wav(
+        source_wav_path = write_audio_value_to_wav(
             audio_value=row[audio_col],
             output_wav_path=temp_wav_path,
         )
 
-        convert_to_mp3(
-            input_audio_path=source_audio_path,
-            output_mp3_path=temp_mp3_path,
-            target_sample_rate=config.target_sample_rate,
-            target_channels=config.target_channels,
-            mp3_bitrate=config.mp3_bitrate,
-        )
-
-        converted_probe = probe_audio(temp_mp3_path)
+        audio_probe = probe_audio(source_wav_path)
 
         audio_uri = gcs.upload_file(
-            local_path=temp_mp3_path,
+            local_path=source_wav_path,
             destination_blob_name=audio_blob_name,
             skip_if_exists=True,
         )
@@ -123,9 +114,11 @@ def process_one_row(
         "lang": lang,
         "gender": gender,
         "transcript_hash": transcript_hash(transcript),
-        "audio_format": "mp3",
-        "sample_rate": int(converted_probe["sample_rate"]),
-        "channels": int(converted_probe["channels"]),
+        "audio_format": "wav",
+        "sample_rate": int(audio_probe["sample_rate"]),
+        "channels": int(audio_probe["channels"]),
+        "codec_name": audio_probe["codec_name"],
+        "duration": audio_probe.get("duration"),
         "gcs_size_bytes": uploaded_size,
     }
 
@@ -165,7 +158,7 @@ def main() -> None:
     limit = None if args.limit == -1 else args.limit
 
     print("=" * 80)
-    print("Starting resumable upload")
+    print("Starting WAV resumable upload")
     print(f"Run name: {run_name}")
     print(f"Bucket: gs://{config.gcp_bucket_name}")
     print(f"Start index: {start_index}")

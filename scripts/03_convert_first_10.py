@@ -2,13 +2,15 @@ import tempfile
 from itertools import islice
 from pathlib import Path
 
-from src.audio_utils import convert_to_mp3, probe_audio, write_audio_value_to_wav
+from src.audio_utils import (
+    copy_wav_to_destination,
+    get_audio_stats_from_wav,
+    probe_audio,
+    write_audio_value_to_wav,
+)
 from src.config import load_config
 from src.hash_utils import record_hash, transcript_hash
-from src.hf_dataset import (
-    detect_required_columns,
-    load_streaming_dataset,
-)
+from src.hf_dataset import detect_required_columns, load_streaming_dataset
 from src.manifest_utils import append_jsonl
 
 
@@ -55,28 +57,27 @@ def main() -> None:
             transcript=transcript,
         )
 
-        output_mp3_path = audio_output_dir / f"{record_id}.mp3"
+        final_wav_path = audio_output_dir / f"{record_id}.wav"
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_dir_path = Path(temp_dir)
             temp_wav_path = temp_dir_path / f"{record_id}.wav"
 
-            source_audio_path = write_audio_value_to_wav(
+            source_wav_path = write_audio_value_to_wav(
                 audio_value=row[audio_col],
                 output_wav_path=temp_wav_path,
             )
 
-            source_probe = probe_audio(source_audio_path)
+            source_probe = probe_audio(source_wav_path)
+            source_stats = get_audio_stats_from_wav(source_wav_path)
 
-            convert_to_mp3(
-                input_audio_path=source_audio_path,
-                output_mp3_path=output_mp3_path,
-                target_sample_rate=config.target_sample_rate,
-                target_channels=config.target_channels,
-                mp3_bitrate=config.mp3_bitrate,
+            copy_wav_to_destination(
+                source_wav_path=source_wav_path,
+                destination_wav_path=final_wav_path,
             )
 
-            converted_probe = probe_audio(output_mp3_path)
+            final_probe = probe_audio(final_wav_path)
+            final_stats = get_audio_stats_from_wav(final_wav_path)
 
         manifest_row = {
             "record_id": record_id,
@@ -84,24 +85,28 @@ def main() -> None:
             "source_config": config.dataset_config,
             "source_split": config.dataset_split,
             "source_index": index,
-            "local_audio_path": str(output_mp3_path),
+            "local_audio_path": str(final_wav_path),
             "transcript": transcript,
             "lang": lang,
             "gender": gender,
             "transcript_hash": transcript_hash(transcript),
+            "audio_format": "wav",
             "source_audio_probe": source_probe,
-            "converted_audio_probe": converted_probe,
+            "source_audio_stats": source_stats,
+            "final_audio_probe": final_probe,
+            "final_audio_stats": final_stats,
         }
 
         append_jsonl(manifest_path, manifest_row)
 
-        print(f"Converted {index + 1}/10")
-        print(f"  MP3: {output_mp3_path}")
-        print(f"  Source audio: {source_probe}")
-        print(f"  Converted audio: {converted_probe}")
+        print(f"Saved WAV {index + 1}/10")
+        print(f"  WAV: {final_wav_path}")
+        print(f"  Source probe: {source_probe}")
+        print(f"  Source stats: {source_stats}")
+        print(f"  Final probe: {final_probe}")
 
     print("=" * 80)
-    print(f"Done. Preview files saved under: {output_dir}")
+    print(f"Done. Preview WAV files saved under: {output_dir}")
     print(f"Manifest: {manifest_path}")
 
 
