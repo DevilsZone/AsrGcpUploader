@@ -33,6 +33,12 @@ on:
         type: boolean
         default: true
 
+      start_index:
+        description: "Start index. Use 0 for beginning, 10 to skip first 10 rows."
+        required: true
+        type: string
+        default: "0"
+
 jobs:
   build-matrix:
     runs-on: ubuntu-latest
@@ -95,6 +101,11 @@ jobs:
       - name: Run upload batch
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GCP_BUCKET_NAME: ${{ secrets.GCP_BUCKET_NAME }}
+          GCP_RUN_NAME: temp_run_name
+          DATASET_NAME: temp_dataset
+          DATASET_CONFIG: temp_config
+          DATASET_SPLIT: temp_split
           PYTHONPATH: ${{ github.workspace }}
         run: |
           RESET_FLAG=""
@@ -114,5 +125,6 @@ jobs:
             --dataset-split "${{ matrix.dataset_split }}" \
             --run-name "${{ matrix.run_name }}" \
             --limit "${{ inputs.batch_limit }}" \
+            --start-index "${{ inputs.start_index }}" \
             $RESET_FLAG \
             $FORCE_EXIT_FLAG
