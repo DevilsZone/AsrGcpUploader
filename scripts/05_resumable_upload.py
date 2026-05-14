@@ -1,5 +1,16 @@
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="resource_tracker: There appear to be .* leaked semaphore objects.*",
+    category=UserWarning,
+)
+
 import argparse
+import gc
 import tempfile
+import os
+
 from pathlib import Path
 
 from src.audio_utils import convert_to_mp3, probe_audio, write_audio_value_to_wav
@@ -41,7 +52,65 @@ def parse_args() -> argparse.Namespace:
         help="Start from zero and overwrite previous checkpoint for this run.",
     )
 
+    parser.add_argument(
+        "--bucket",
+        type=str,
+        default=None,
+        help="Optional GCS bucket name. Overrides GCP_BUCKET_NAME from .env.",
+    )
+
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        help="Optional Hugging Face dataset name. Overrides DATASET_NAME from .env.",
+    )
+
+    parser.add_argument(
+        "--dataset-config",
+        type=str,
+        default=None,
+        help="Optional Hugging Face dataset config/language. Overrides DATASET_CONFIG from .env.",
+    )
+
+    parser.add_argument(
+        "--dataset-split",
+        type=str,
+        default=None,
+        help="Optional Hugging Face dataset split. Overrides DATASET_SPLIT from .env.",
+    )
+
+    parser.add_argument(
+        "--hf-token",
+        type=str,
+        default=None,
+        help="Optional Hugging Face token. Usually passed through HF_TOKEN env instead.",
+    )
+
+    parser.add_argument(
+        "--force-exit",
+        action="store_true",
+        help="Force process exit after successful completion to avoid HF streaming shutdown hang.",
+    )
+
     return parser.parse_args()
+
+def apply_cli_overrides(config, args: argparse.Namespace):
+    """
+    Keep the existing config object, but allow GitHub Actions / run configuration
+    to override values explicitly.
+    """
+    from dataclasses import replace
+
+    return replace(
+        config,
+        hf_token=args.hf_token or os.getenv("HF_TOKEN") or config.hf_token,
+        gcp_bucket_name=args.bucket or config.gcp_bucket_name,
+        gcp_run_name=args.run_name or config.gcp_run_name,
+        dataset_name=args.dataset_name or config.dataset_name,
+        dataset_config=args.dataset_config or config.dataset_config,
+        dataset_split=args.dataset_split or config.dataset_split,
+    )
 
 
 def process_one_row(
@@ -135,6 +204,7 @@ def process_one_row(
 def main() -> None:
     args = parse_args()
     config = load_config()
+    config = apply_cli_overrides(config, args)
 
     run_name = args.run_name or config.gcp_run_name
 
@@ -165,7 +235,7 @@ def main() -> None:
     limit = None if args.limit == -1 else args.limit
 
     print("=" * 80)
-    print("Starting resumable upload")
+    print("Starting WAV resumable upload")
     print(f"Run name: {run_name}")
     print(f"Bucket: gs://{config.gcp_bucket_name}")
     print(f"Start index: {start_index}")
@@ -183,46 +253,53 @@ def main() -> None:
         token=config.hf_token,
     )
 
+    stream = dataset.skip(start_index)
+
+    if limit is not None:
+        stream = stream.take(limit)
+
     processed_this_run = 0
 
-    for index, row in enumerate(dataset):
-        if index < start_index:
-            continue
+    try:
+        for offset, row in enumerate(stream):
+            index = start_index + offset
 
-        if limit is not None and processed_this_run >= limit:
-            break
+            try:
+                process_one_row(
+                    row=row,
+                    index=index,
+                    config=config,
+                    run_name=run_name,
+                    gcs=gcs,
+                    manifest_path=manifest_path,
+                )
 
-        try:
-            process_one_row(
-                row=row,
-                index=index,
-                config=config,
-                run_name=run_name,
-                gcs=gcs,
-                manifest_path=manifest_path,
-            )
+                processed_this_run += 1
 
-            processed_this_run += 1
+                checkpoint["next_index"] = index + 1
+                checkpoint["processed_count"] = checkpoint.get("processed_count", 0) + 1
+                save_checkpoint(checkpoint_path, checkpoint)
 
-            checkpoint["next_index"] = index + 1
-            checkpoint["processed_count"] = checkpoint.get("processed_count", 0) + 1
-            save_checkpoint(checkpoint_path, checkpoint)
+                print(f"SUCCESS index={index}, processed_this_run={processed_this_run}")
 
-            print(f"SUCCESS index={index}, processed_this_run={processed_this_run}")
+            except Exception as exception:
+                failure_row = {
+                    "source_index": index,
+                    "error": str(exception),
+                }
 
-        except Exception as exception:
-            failure_row = {
-                "source_index": index,
-                "error": str(exception),
-            }
+                append_jsonl(failures_path, failure_row)
 
-            append_jsonl(failures_path, failure_row)
+                checkpoint["next_index"] = index + 1
+                checkpoint["failed_count"] = checkpoint.get("failed_count", 0) + 1
+                save_checkpoint(checkpoint_path, checkpoint)
 
-            checkpoint["next_index"] = index + 1
-            checkpoint["failed_count"] = checkpoint.get("failed_count", 0) + 1
-            save_checkpoint(checkpoint_path, checkpoint)
+                print(f"FAILED index={index}: {exception}")
 
-            print(f"FAILED index={index}: {exception}")
+    finally:
+        del stream
+        del dataset
+        gc.collect()
 
     manifest_blob_name = f"{run_name}/manifests/{run_name}.jsonl"
 
@@ -246,6 +323,10 @@ def main() -> None:
             skip_if_exists=False,
         )
         print(f"Failures uploaded to: {failures_uri}")
+        os._exit(1)
+
+    print("Completed. Exiting process.")
+    os._exit(0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,117 @@
+name: Upload ASR Dataset to GCS
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls_json:
+        description: "JSON array of up to 20 Hugging Face viewer URLs"
+        required: true
+        type: string
+        default: '["https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/hindi"]'
+
+      splits:
+        description: "Comma-separated splits"
+        required: true
+        type: string
+        default: "train,valid"
+
+      batch_limit:
+        description: "Rows per job. Use -1 for full split."
+        required: true
+        type: string
+        default: "500"
+
+      reset_checkpoint:
+        description: "Reset checkpoint for each job?"
+        required: true
+        type: boolean
+        default: false
+
+      force_exit:
+        description: "Force exit after completion?"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-matrix:
+    runs-on: ubuntu-latest
+
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build matrix
+        id: matrix
+        run: |
+          MATRIX=$(python scripts/build_github_matrix.py \
+            --urls-json '${{ inputs.urls_json }}' \
+            --splits '${{ inputs.splits }}')
+
+          echo "Generated matrix:"
+          echo "$MATRIX"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  upload:
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.build-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Authenticate to Google Cloud using service account key
+        env:
+          GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
+        run: |
+          echo "$GCP_SA_KEY_JSON" > "${{ runner.temp }}/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${{ runner.temp }}/gcp-key.json" >> "$GITHUB_ENV"
+
+      - name: Run upload batch
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          RESET_FLAG=""
+          if [ "${{ inputs.reset_checkpoint }}" = "true" ]; then
+            RESET_FLAG="--reset-checkpoint"
+          fi
+
+          FORCE_EXIT_FLAG=""
+          if [ "${{ inputs.force_exit }}" = "true" ]; then
+            FORCE_EXIT_FLAG="--force-exit"
+          fi
+
+          python scripts/05_resumable_upload.py \
+            --bucket "${{ secrets.GCP_BUCKET_NAME }}" \
+            --dataset-name "${{ matrix.dataset_name }}" \
+            --dataset-config "${{ matrix.dataset_config }}" \
+            --dataset-split "${{ matrix.dataset_split }}" \
+            --run-name "${{ matrix.run_name }}" \
+            --limit "${{ inputs.batch_limit }}" \
+            $RESET_FLAG \
+            $FORCE_EXIT_FLAG
