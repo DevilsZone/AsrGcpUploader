@@ -95,6 +95,7 @@ jobs:
       - name: Run upload batch
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           RESET_FLAG=""
           if [ "${{ inputs.reset_checkpoint }}" = "true" ]; then
