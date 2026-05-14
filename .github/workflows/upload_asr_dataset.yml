@@ -107,7 +107,15 @@ jobs:
           DATASET_CONFIG: temp_config
           DATASET_SPLIT: temp_split
           PYTHONPATH: ${{ github.workspace }}
+          PYTHONUNBUFFERED: "1"
         run: |
+          echo "Starting upload script..."
+          echo "Dataset: ${{ matrix.dataset_name }}"
+          echo "Config: ${{ matrix.dataset_config }}"
+          echo "Split: ${{ matrix.dataset_split }}"
+          echo "Run name: ${{ matrix.run_name }}"
+          echo "Batch limit: ${{ inputs.batch_limit }}"
+
           RESET_FLAG=""
           if [ "${{ inputs.reset_checkpoint }}" = "true" ]; then
             RESET_FLAG="--reset-checkpoint"
@@ -118,7 +126,7 @@ jobs:
             FORCE_EXIT_FLAG="--force-exit"
           fi
 
-          python scripts/05_resumable_upload.py \
+          python -u scripts/05_resumable_upload.py \
             --bucket "${{ secrets.GCP_BUCKET_NAME }}" \
             --dataset-name "${{ matrix.dataset_name }}" \
             --dataset-config "${{ matrix.dataset_config }}" \
