@@ -22,7 +22,7 @@ on:
         default: "10"
 
       start_index:
-        description: "Start Index for the job"
+        description: "Start index for the job. Use empty only if you want checkpoint mode."
         required: true
         type: string
         default: "0"
@@ -125,13 +125,28 @@ jobs:
 
             sudo install -m 0755 -d /etc/apt/keyrings
 
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+            . /etc/os-release
+
+            if [ "$ID" = "ubuntu" ]; then
+              DOCKER_REPO_OS="ubuntu"
+            elif [ "$ID" = "debian" ]; then
+              DOCKER_REPO_OS="debian"
+            else
+              echo "Unsupported OS for automatic Docker install: $ID"
+              exit 1
+            fi
+
+            echo "Detected OS: $ID"
+            echo "Detected codename: $VERSION_CODENAME"
+            echo "Using Docker repo: ${DOCKER_REPO_OS}"
+
+            curl -fsSL "https://download.docker.com/linux/${DOCKER_REPO_OS}/gpg" \
               | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 
             sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
             echo \
-              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DOCKER_REPO_OS} ${VERSION_CODENAME} stable" \
               | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
             sudo apt-get update -y
@@ -166,22 +181,19 @@ jobs:
           printf '%s' "${GCP_SA_KEY_JSON_B64}" | base64 -d > credentials/gcp-key.json
           chmod 600 credentials/gcp-key.json
 
-          echo "Decoding URL input..."
-          export URLS_JSON="$(printf '%s' "${URLS_JSON_B64}" | base64 -d)"
-
           echo "Preparing background launch..."
 
-          mkdir -p logs
-          
+          START_INDEX="${START_INDEX:-}"
+
           LAUNCH_ID="$(date +%Y%m%d-%H%M%S)"
           LAUNCH_LOG="logs/vps-launch-${LAUNCH_ID}.log"
           LAUNCH_ENV="logs/vps-launch-${LAUNCH_ID}.env"
-          
+
           cat > "${LAUNCH_ENV}" <<EOF
           APP_DIR=${APP_DIR}
           HF_TOKEN=${HF_TOKEN}
           GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
-          URLS_JSON=${URLS_JSON}
+          URLS_JSON_B64=${URLS_JSON_B64}
           SPLITS=${SPLITS}
           BATCH_LIMIT=${BATCH_LIMIT}
           START_INDEX=${START_INDEX}
@@ -190,15 +202,21 @@ jobs:
           MAX_PARALLEL_CONTAINERS=${MAX_PARALLEL_CONTAINERS}
           EOF
 
+          # Remove leading spaces accidentally introduced by YAML indentation.
+          sed -i 's/^[[:space:]]*//' "${LAUNCH_ENV}"
+
           chmod 600 "${LAUNCH_ENV}"
           chmod +x scripts/start_vps_containers_from_urls.sh
-          
+
           echo "Starting VPS launcher in background..."
+
           nohup bash -c "
             set -euo pipefail
             cd '${APP_DIR}'
             set -a
             source '${LAUNCH_ENV}'
+            URLS_JSON=\$(printf '%s' \"\$URLS_JSON_B64\" | base64 -d)
+            export URLS_JSON
             set +a
             scripts/start_vps_containers_from_urls.sh
           " > "${LAUNCH_LOG}" 2>&1 &
