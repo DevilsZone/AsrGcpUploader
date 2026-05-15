@@ -1,0 +1,24 @@
+services:
+  asr-uploader:
+    build: .
+    container_name: asr-uploader
+    restart: "no"
+
+    env_file:
+      - .runtime.env
+
+    volumes:
+      - ./output:/app/output
+      - ./credentials:/app/credentials:ro
+      - ./logs:/app/logs
+
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/gcp-key.json
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+
+    command:
+      [
+        "bash",
+        "scripts/run_jobs_from_urls.sh"
+      ]

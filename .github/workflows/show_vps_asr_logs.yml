@@ -1,0 +1,66 @@
+name: Show VPS ASR Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      tail_lines:
+        description: "Number of log lines per container"
+        required: true
+        type: string
+        default: "100"
+
+      include_stopped:
+        description: "Include stopped ASR containers?"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  show-logs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Show container status and logs
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          TAIL_LINES: ${{ inputs.tail_lines }}
+          INCLUDE_STOPPED: ${{ inputs.include_stopped }}
+        run: |
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            "TAIL_LINES='${TAIL_LINES}' INCLUDE_STOPPED='${INCLUDE_STOPPED}' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          echo "============================================================"
+          echo "ASR container status"
+          echo "============================================================"
+
+          if [ "${INCLUDE_STOPPED}" = "true" ]; then
+            docker ps -a --filter "label=asr-uploader=true"
+            CONTAINERS=$(docker ps -a --filter "label=asr-uploader=true" --format "{{.Names}}")
+          else
+            docker ps --filter "label=asr-uploader=true"
+            CONTAINERS=$(docker ps --filter "label=asr-uploader=true" --format "{{.Names}}")
+          fi
+
+          if [ -z "${CONTAINERS}" ]; then
+            echo "No ASR containers found."
+            exit 0
+          fi
+
+          for container in ${CONTAINERS}; do
+            echo ""
+            echo "============================================================"
+            echo "Logs for container: ${container}"
+            echo "============================================================"
+
+            docker logs --tail "${TAIL_LINES}" "${container}" || true
+          done
+          REMOTE_SCRIPT
