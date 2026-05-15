@@ -14,8 +14,6 @@ RUN python -m pip install --upgrade pip \
 
 COPY . .
 
-RUN chmod +x scripts/start_vps_containers_from_urls.sh || true
-
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
