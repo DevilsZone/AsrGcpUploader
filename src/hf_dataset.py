@@ -1,6 +1,6 @@
 from typing import Any
 
-from datasets import load_dataset
+from datasets import Audio, load_dataset
 
 
 def load_streaming_dataset(
@@ -9,13 +9,35 @@ def load_streaming_dataset(
     split: str,
     token: str | None,
 ) -> Any:
-    return load_dataset(
+    dataset = load_dataset(
         dataset_name,
         dataset_config,
         split=split,
         streaming=True,
         token=token,
     )
+
+    # Important:
+
+    # Avoid Hugging Face automatic audio decoding through TorchCodec.
+
+    # This prevents Docker failures caused by torch/torchcodec/ffmpeg mismatch.
+
+    try:
+
+        dataset = dataset.cast_column("audio_filepath", Audio(decode=False))
+
+    except Exception as exception:
+
+        print(
+
+            f"Could not cast audio_filepath to Audio(decode=False). "
+
+            f"Continuing without cast. Reason: {exception}"
+
+        )
+
+    return dataset
 
 
 def find_first_available_column(row: dict, candidates: list[str]) -> str | None:

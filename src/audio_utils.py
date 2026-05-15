@@ -161,6 +161,19 @@ def write_audio_value_to_wav(audio_value: Any, output_wav_path: Path) -> Path:
                 convert_any_audio_to_wav(source_path, output_wav_path)
                 return output_wav_path
 
+        if "bytes" in audio_value and audio_value["bytes"] is not None:
+            raw_audio_path = output_wav_path.with_suffix(".source_audio")
+
+            with raw_audio_path.open("wb") as file:
+                file.write(audio_value["bytes"])
+
+            if is_wav_file(raw_audio_path):
+                raw_audio_path.replace(output_wav_path)
+                return output_wav_path
+
+            convert_any_audio_to_wav(raw_audio_path, output_wav_path)
+            return output_wav_path
+
         if "array" in audio_value and "sampling_rate" in audio_value:
             audio_array = _convert_audio_array_for_soundfile(audio_value["array"])
             sample_rate = int(audio_value["sampling_rate"])
