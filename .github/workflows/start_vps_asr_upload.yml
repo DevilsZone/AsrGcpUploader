@@ -161,21 +161,53 @@ jobs:
           echo "Decoding URL input..."
           export URLS_JSON="$(printf '%s' "${URLS_JSON_B64}" | base64 -d)"
 
-          echo "Starting containers..."
-          export APP_DIR="${APP_DIR}"
-          export HF_TOKEN="${HF_TOKEN}"
-          export GCP_BUCKET_NAME="${GCP_BUCKET_NAME}"
-          export SPLITS="${SPLITS}"
-          export BATCH_LIMIT="${BATCH_LIMIT}"
-          export RESET_CHECKPOINT="${RESET_CHECKPOINT}"
-          export FORCE_EXIT="${FORCE_EXIT}"
-          export MAX_PARALLEL_CONTAINERS="${MAX_PARALLEL_CONTAINERS}"
+          echo "Preparing background launch..."
 
+          mkdir -p logs
+          
+          LAUNCH_ID="$(date +%Y%m%d-%H%M%S)"
+          LAUNCH_LOG="logs/vps-launch-${LAUNCH_ID}.log"
+          LAUNCH_ENV="logs/vps-launch-${LAUNCH_ID}.env"
+          
+          cat > "${LAUNCH_ENV}" <<EOF
+          APP_DIR=${APP_DIR}
+          HF_TOKEN=${HF_TOKEN}
+          GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
+          URLS_JSON=${URLS_JSON}
+          SPLITS=${SPLITS}
+          BATCH_LIMIT=${BATCH_LIMIT}
+          START_INDEX=${START_INDEX}
+          RESET_CHECKPOINT=${RESET_CHECKPOINT}
+          FORCE_EXIT=${FORCE_EXIT}
+          MAX_PARALLEL_CONTAINERS=${MAX_PARALLEL_CONTAINERS}
+          EOF
+
+          chmod 600 "${LAUNCH_ENV}"
           chmod +x scripts/start_vps_containers_from_urls.sh
-          scripts/start_vps_containers_from_urls.sh
+          
+          echo "Starting VPS launcher in background..."
+          nohup bash -c "
+            set -euo pipefail
+            cd '${APP_DIR}'
+            set -a
+            source '${LAUNCH_ENV}'
+            set +a
+            scripts/start_vps_containers_from_urls.sh
+          " > "${LAUNCH_LOG}" 2>&1 &
+
+          LAUNCH_PID=$!
 
           echo "============================================================"
-          echo "VPS start command completed."
-          echo "Use logs workflow or SSH to view container logs."
+          echo "VPS launcher started successfully."
+          echo "Launcher PID: ${LAUNCH_PID}"
+          echo "Launcher log: ${APP_DIR}/${LAUNCH_LOG}"
+          echo ""
+          echo "GitHub Action will now exit."
+          echo "The VPS launcher and Docker containers will continue running."
           echo "============================================================"
+
+          sleep 2
+
+          echo "Initial launcher log:"
+          tail -n 40 "${LAUNCH_LOG}" || true
           REMOTE_SCRIPT
