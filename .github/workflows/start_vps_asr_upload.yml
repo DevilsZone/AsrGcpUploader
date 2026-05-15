@@ -1,0 +1,181 @@
+name: Start VPS ASR Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls_json:
+        description: "JSON array of up to 20 Hugging Face viewer URLs"
+        required: true
+        type: string
+        default: '["https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/hindi"]'
+
+      splits:
+        description: "Comma-separated splits, for example train,valid"
+        required: true
+        type: string
+        default: "train,valid"
+
+      batch_limit:
+        description: "Rows per job. Use -1 for all rows in each split."
+        required: true
+        type: string
+        default: "10"
+
+      reset_checkpoint:
+        description: "Reset checkpoint before running?"
+        required: true
+        type: boolean
+        default: false
+
+      force_exit:
+        description: "Force process exit after each script run?"
+        required: true
+        type: boolean
+        default: true
+
+      max_parallel_containers:
+        description: "How many containers to run at the same time on VPS"
+        required: true
+        type: string
+        default: "2"
+
+      repo_branch:
+        description: "Git branch to run on VPS"
+        required: true
+        type: string
+        default: "main"
+
+jobs:
+  start-vps-job:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Prepare encoded payloads
+        id: payload
+        env:
+          GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
+          URLS_JSON: ${{ inputs.urls_json }}
+        run: |
+          GCP_SA_KEY_JSON_B64=$(printf '%s' "$GCP_SA_KEY_JSON" | base64 -w 0)
+          URLS_JSON_B64=$(printf '%s' "$URLS_JSON" | base64 -w 0)
+
+          echo "gcp_sa_key_json_b64=$GCP_SA_KEY_JSON_B64" >> "$GITHUB_OUTPUT"
+          echo "urls_json_b64=$URLS_JSON_B64" >> "$GITHUB_OUTPUT"
+
+      - name: Start containers on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          REPO_CLONE_URL: ${{ secrets.REPO_CLONE_URL }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GCP_BUCKET_NAME: ${{ secrets.GCP_BUCKET_NAME }}
+
+          GCP_SA_KEY_JSON_B64: ${{ steps.payload.outputs.gcp_sa_key_json_b64 }}
+          URLS_JSON_B64: ${{ steps.payload.outputs.urls_json_b64 }}
+
+          SPLITS: ${{ inputs.splits }}
+          BATCH_LIMIT: ${{ inputs.batch_limit }}
+          RESET_CHECKPOINT: ${{ inputs.reset_checkpoint }}
+          FORCE_EXIT: ${{ inputs.force_exit }}
+          MAX_PARALLEL_CONTAINERS: ${{ inputs.max_parallel_containers }}
+          REPO_BRANCH: ${{ inputs.repo_branch }}
+        run: |
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            "REPO_CLONE_URL='${REPO_CLONE_URL}' \
+             HF_TOKEN='${HF_TOKEN}' \
+             GCP_BUCKET_NAME='${GCP_BUCKET_NAME}' \
+             GCP_SA_KEY_JSON_B64='${GCP_SA_KEY_JSON_B64}' \
+             URLS_JSON_B64='${URLS_JSON_B64}' \
+             SPLITS='${SPLITS}' \
+             BATCH_LIMIT='${BATCH_LIMIT}' \
+             RESET_CHECKPOINT='${RESET_CHECKPOINT}' \
+             FORCE_EXIT='${FORCE_EXIT}' \
+             MAX_PARALLEL_CONTAINERS='${MAX_PARALLEL_CONTAINERS}' \
+             REPO_BRANCH='${REPO_BRANCH}' \
+             bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          APP_DIR="/opt/asr-gcp-uploader"
+
+          echo "============================================================"
+          echo "VPS ASR upload bootstrap started"
+          echo "============================================================"
+
+          echo "Installing required packages if missing..."
+          sudo apt-get update -y
+          sudo apt-get install -y ca-certificates curl gnupg git lsb-release python3
+
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker not found. Installing Docker..."
+
+            sudo install -m 0755 -d /etc/apt/keyrings
+
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+              | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+              | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+            sudo apt-get update -y
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          else
+            echo "Docker already installed."
+          fi
+
+          echo "Preparing app directory: ${APP_DIR}"
+          sudo mkdir -p "${APP_DIR}"
+          sudo chown -R "$USER":"$USER" "${APP_DIR}"
+
+          if [ ! -d "${APP_DIR}/.git" ]; then
+            echo "Cloning repository..."
+            git clone "${REPO_CLONE_URL}" "${APP_DIR}"
+          else
+            echo "Repository already exists. Fetching latest changes..."
+            cd "${APP_DIR}"
+            git fetch --all
+          fi
+
+          cd "${APP_DIR}"
+
+          echo "Checking out branch: ${REPO_BRANCH}"
+          git checkout "${REPO_BRANCH}"
+          git pull origin "${REPO_BRANCH}"
+
+          echo "Creating persistent folders..."
+          mkdir -p credentials output logs
+
+          echo "Writing GCP credentials file from GitHub secret..."
+          printf '%s' "${GCP_SA_KEY_JSON_B64}" | base64 -d > credentials/gcp-key.json
+          chmod 600 credentials/gcp-key.json
+
+          echo "Decoding URL input..."
+          export URLS_JSON="$(printf '%s' "${URLS_JSON_B64}" | base64 -d)"
+
+          echo "Starting containers..."
+          export APP_DIR="${APP_DIR}"
+          export HF_TOKEN="${HF_TOKEN}"
+          export GCP_BUCKET_NAME="${GCP_BUCKET_NAME}"
+          export SPLITS="${SPLITS}"
+          export BATCH_LIMIT="${BATCH_LIMIT}"
+          export RESET_CHECKPOINT="${RESET_CHECKPOINT}"
+          export FORCE_EXIT="${FORCE_EXIT}"
+          export MAX_PARALLEL_CONTAINERS="${MAX_PARALLEL_CONTAINERS}"
+
+          chmod +x scripts/start_vps_containers_from_urls.sh
+          scripts/start_vps_containers_from_urls.sh
+
+          echo "============================================================"
+          echo "VPS start command completed."
+          echo "Use logs workflow or SSH to view container logs."
+          echo "============================================================"
+          REMOTE_SCRIPT
