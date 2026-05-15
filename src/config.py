@@ -17,9 +17,7 @@ class PipelineConfig:
     dataset_config: str
     dataset_split: str
 
-    target_sample_rate: int
-    target_channels: int
-    mp3_bitrate: str
+    audio_format: str
 
     local_output_dir: str = "output"
 
@@ -34,6 +32,14 @@ def load_config() -> PipelineConfig:
     if not run_name:
         raise ValueError("Missing GCP_RUN_NAME in .env or environment.")
 
+    audio_format = os.getenv("AUDIO_FORMAT", "wav").lower().strip()
+
+    if audio_format != "wav":
+        raise ValueError(
+            f"Unsupported AUDIO_FORMAT={audio_format}. "
+            f"For now this pipeline expects AUDIO_FORMAT=wav."
+        )
+
     return PipelineConfig(
         hf_token=os.getenv("HF_TOKEN"),
         gcp_bucket_name=bucket_name,
@@ -41,7 +47,5 @@ def load_config() -> PipelineConfig:
         dataset_name=os.getenv("DATASET_NAME", "ai4bharat/IndicVoices"),
         dataset_config=os.getenv("DATASET_CONFIG", "hindi"),
         dataset_split=os.getenv("DATASET_SPLIT", "valid"),
-        target_sample_rate=int(os.getenv("TARGET_SAMPLE_RATE", "16000")),
-        target_channels=int(os.getenv("TARGET_CHANNELS", "1")),
-        mp3_bitrate=os.getenv("MP3_BITRATE", "64k"),
+        audio_format=audio_format,
     )

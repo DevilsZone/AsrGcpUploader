@@ -41,9 +41,7 @@ def main() -> None:
         record_id = row["record_id"]
         shard = record_id[:2]
 
-        audio_blob_name = (
-            f"{config.gcp_run_name}/audio/{shard}/{record_id}.mp3"
-        )
+        audio_blob_name = f"{config.gcp_run_name}/audio/{shard}/{record_id}.wav"
 
         audio_uri = gcs.upload_file(
             local_path=local_audio_path,
@@ -67,9 +65,11 @@ def main() -> None:
             "lang": row["lang"],
             "gender": row["gender"],
             "transcript_hash": row["transcript_hash"],
-            "audio_format": "mp3",
-            "sample_rate": int(row["converted_audio_probe"]["sample_rate"]),
-            "channels": int(row["converted_audio_probe"]["channels"]),
+            "audio_format": "wav",
+            "sample_rate": int(row["final_audio_probe"]["sample_rate"]),
+            "channels": int(row["final_audio_probe"]["channels"]),
+            "codec_name": row["final_audio_probe"]["codec_name"],
+            "duration": row["final_audio_probe"].get("duration"),
             "gcs_size_bytes": uploaded_size,
         }
 
@@ -78,9 +78,7 @@ def main() -> None:
         print(f"Uploaded and verified {index + 1}/{len(rows)}")
         print(f"  {audio_uri}")
 
-    manifest_blob_name = (
-        f"{config.gcp_run_name}/manifests/preview_10.jsonl"
-    )
+    manifest_blob_name = f"{config.gcp_run_name}/manifests/preview_10.jsonl"
 
     manifest_uri = gcs.upload_file(
         local_path=upload_manifest_path,
