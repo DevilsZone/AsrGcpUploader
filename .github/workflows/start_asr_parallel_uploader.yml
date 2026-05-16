@@ -146,17 +146,18 @@ jobs:
           HF_TOKEN=${HF_TOKEN}
           GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
           GOOGLE_APPLICATION_CREDENTIALS=${APP_DIR}/credentials/gcp-key.json
+          PYTHONPATH=${APP_DIR}
           EOF
-
+          
           sed -i 's/^[[:space:]]*//' "${ENV_FILE}"
           chmod 600 "${ENV_FILE}"
-
-          CMD=". .venv/bin/activate && set -a && . '${ENV_FILE}' && set +a && python scripts/06_parallel_resumable_upload.py --config '${CONFIG_PATH}'"
-
+          
+          CMD="cd '${APP_DIR}' && . .venv/bin/activate && set -a && . '${ENV_FILE}' && set +a && python scripts/06_parallel_resumable_upload.py --config '${CONFIG_PATH}'"
+          
           if [ -n "${ONLY_RUN_NAME}" ]; then
             CMD="${CMD} --only-run-name '${ONLY_RUN_NAME}'"
           fi
-
+          
           if [ "${RESET_CHECKPOINT}" = "true" ]; then
             CMD="${CMD} --reset-checkpoint"
           fi
