@@ -1,0 +1,28 @@
+defaults:
+  dataset_name: ai4bharat/IndicVoices
+  split: valid
+  local_output_dir: output
+
+  gcs_timeout_seconds: 120
+  skip_if_exists: false
+  upload_state_to_gcs_every_batches: 999
+
+  # Use more than 3 records, otherwise speed difference is too small/noisy.
+  limit: 30
+
+jobs:
+  # Baseline: almost sequential
+  - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/bodo
+    dataset_config: bodo
+    run_name: speed_test_bodo_sequential
+    workers: 1
+    batch_size: 1
+    upload_qps: 1
+
+  # Parallel test
+  - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/bodo
+    dataset_config: bodo
+    run_name: speed_test_bodo_parallel
+    workers: 8
+    batch_size: 16
+    upload_qps: 20

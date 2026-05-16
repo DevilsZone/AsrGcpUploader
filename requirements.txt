@@ -5,3 +5,5 @@ python-dotenv
 soundfile
 tqdm
 numpy
+pyyaml
+protobuf

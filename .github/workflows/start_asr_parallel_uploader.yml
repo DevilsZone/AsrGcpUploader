@@ -1,0 +1,137 @@
+name: Start ASR Upload On VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: "Config file path inside repo"
+        required: true
+        default: "config/upload_jobs.yaml"
+      only_run_name:
+        description: "Optional single run_name to execute"
+        required: false
+        default: ""
+      reset_checkpoint:
+        description: "Reset checkpoint before starting"
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  start-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          cat > ~/.ssh/asr_vm_key << 'EOF'
+          ${{ secrets.VM_SSH_KEY }}
+          EOF
+
+          chmod 600 ~/.ssh/asr_vm_key
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Write GCP service account file locally
+        run: |
+          set -euo pipefail
+
+          cat > gcp-service-account.json << 'EOF'
+          ${{ secrets.GCP_SECRET_JSON }}
+          EOF
+
+      - name: Copy GCP service account to VM
+        run: |
+          set -euo pipefail
+
+          ssh -i ~/.ssh/asr_vm_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
+            "mkdir -p /opt/asr-gcp-uploader/secrets"
+
+          scp -i ~/.ssh/asr_vm_key \
+            gcp-service-account.json \
+            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:/opt/asr-gcp-uploader/secrets/gcp-service-account.json"
+
+      - name: Start upload process in background
+        env:
+          CONFIG_PATH: ${{ github.event.inputs.config_path }}
+          ONLY_RUN_NAME: ${{ github.event.inputs.only_run_name }}
+          RESET_CHECKPOINT: ${{ github.event.inputs.reset_checkpoint }}
+        run: |
+          set -euo pipefail
+
+          ssh -i ~/.ssh/asr_vm_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" bash -s << EOF
+          set -euo pipefail
+
+          APP_DIR="/opt/asr-gcp-uploader"
+          LOG_DIR="\$APP_DIR/logs"
+          PID_DIR="\$APP_DIR/run"
+          SECRET_DIR="\$APP_DIR/secrets"
+
+          sudo mkdir -p "\$APP_DIR" "\$LOG_DIR" "\$PID_DIR" "\$SECRET_DIR"
+          sudo chown -R "\$USER:\$USER" "\$APP_DIR"
+
+          if [ ! -d "\$APP_DIR/.git" ]; then
+            rm -rf "\$APP_DIR"
+            git clone "${{ secrets.REPO_URL }}" "\$APP_DIR"
+          fi
+
+          cd "\$APP_DIR"
+
+          git fetch --all
+          git pull --ff-only
+
+          python3 -m venv .venv
+          . .venv/bin/activate
+
+          pip install -U pip
+          pip install -r requirements.txt
+
+          cat > .env.upload << ENVEOF
+          HF_TOKEN=${{ secrets.HF_TOKEN }}
+          GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }}
+          GOOGLE_APPLICATION_CREDENTIALS=/opt/asr-gcp-uploader/secrets/gcp-service-account.json
+          ENVEOF
+
+          chmod 600 .env.upload
+
+          TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
+          LOG_FILE="\$LOG_DIR/asr_upload_\$TIMESTAMP.log"
+          PID_FILE="\$PID_DIR/asr_upload.pid"
+
+          CMD=". .venv/bin/activate && set -a && . .env.upload && set +a && python scripts/06_parallel_resumable_upload.py --config '${CONFIG_PATH}'"
+
+          if [ -n "${ONLY_RUN_NAME}" ]; then
+            CMD="\$CMD --only-run-name '${ONLY_RUN_NAME}'"
+          fi
+
+          if [ "${RESET_CHECKPOINT}" = "true" ]; then
+            CMD="\$CMD --reset-checkpoint"
+          fi
+
+          echo "Starting background upload..."
+          echo "Command: \$CMD"
+          echo "Log file: \$LOG_FILE"
+
+          setsid nohup bash -lc "\$CMD" > "\$LOG_FILE" 2>&1 < /dev/null &
+          PID=\$!
+
+          echo "\$PID" > "\$PID_FILE"
+
+          sleep 2
+
+          if ps -p "\$PID" > /dev/null 2>&1; then
+            echo "Started ASR upload successfully."
+            echo "PID: \$PID"
+            echo "PID file: \$PID_FILE"
+            echo "Log file: \$LOG_FILE"
+          else
+            echo "Upload process failed to start. Last log lines:"
+            tail -100 "\$LOG_FILE" || true
+            exit 1
+          fi
+          EOF
