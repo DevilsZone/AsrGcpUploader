@@ -7,124 +7,189 @@ on:
         description: "Config file path inside repo"
         required: true
         default: "config/upload_jobs.yaml"
+
       only_run_name:
         description: "Optional single run_name to execute"
         required: false
         default: ""
+
       reset_checkpoint:
         description: "Reset checkpoint before starting"
         required: true
         type: boolean
         default: false
 
+      repo_branch:
+        description: "Git branch to run on VM"
+        required: true
+        type: string
+        default: "main"
+
 jobs:
   start-upload:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Prepare SSH key
         run: |
+          set -euo pipefail
+
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 700 ~/.ssh
+
+          cat > ~/.ssh/vps_key << 'EOF'
+          ${{ secrets.VPS_SSH_KEY }}
+          EOF
+
           chmod 600 ~/.ssh/vps_key
           ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Write GCP service account file locally
+      - name: Prepare encoded GCP credentials
+        id: payload
+        env:
+          GCP_SA_KEY_JSON: ${{ secrets.GCP_SA_KEY_JSON }}
         run: |
           set -euo pipefail
 
-          cat > gcp-service-account.json << 'EOF'
-          ${{ secrets.GCP_SECRET_JSON }}
-          EOF
-
-      - name: Copy GCP service account to VM
-        run: |
-          set -euo pipefail
-
-          ssh -i ~/.ssh/asr_vm_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" \
-            "mkdir -p /opt/asr-gcp-uploader/secrets"
-
-          scp -i ~/.ssh/asr_vm_key \
-            gcp-service-account.json \
-            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:/opt/asr-gcp-uploader/secrets/gcp-service-account.json"
+          GCP_SA_KEY_JSON_B64="$(printf '%s' "$GCP_SA_KEY_JSON" | base64 -w 0)"
+          echo "gcp_sa_key_json_b64=$GCP_SA_KEY_JSON_B64" >> "$GITHUB_OUTPUT"
 
       - name: Start upload process in background
         env:
-          CONFIG_PATH: ${{ github.event.inputs.config_path }}
-          ONLY_RUN_NAME: ${{ github.event.inputs.only_run_name }}
-          RESET_CHECKPOINT: ${{ github.event.inputs.reset_checkpoint }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          REPO_CLONE_URL: ${{ secrets.REPO_CLONE_URL }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GCP_BUCKET_NAME: ${{ secrets.GCP_BUCKET_NAME }}
+          GCP_SA_KEY_JSON_B64: ${{ steps.payload.outputs.gcp_sa_key_json_b64 }}
+
+          CONFIG_PATH: ${{ inputs.config_path }}
+          ONLY_RUN_NAME: ${{ inputs.only_run_name }}
+          RESET_CHECKPOINT: ${{ inputs.reset_checkpoint }}
+          REPO_BRANCH: ${{ inputs.repo_branch }}
         run: |
           set -euo pipefail
 
-          ssh -i ~/.ssh/asr_vm_key "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" bash -s << EOF
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            "REPO_CLONE_URL='${REPO_CLONE_URL}' \
+             HF_TOKEN='${HF_TOKEN}' \
+             GCP_BUCKET_NAME='${GCP_BUCKET_NAME}' \
+             GCP_SA_KEY_JSON_B64='${GCP_SA_KEY_JSON_B64}' \
+             CONFIG_PATH='${CONFIG_PATH}' \
+             ONLY_RUN_NAME='${ONLY_RUN_NAME}' \
+             RESET_CHECKPOINT='${RESET_CHECKPOINT}' \
+             REPO_BRANCH='${REPO_BRANCH}' \
+             bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
 
           APP_DIR="/opt/asr-gcp-uploader"
-          LOG_DIR="\$APP_DIR/logs"
-          PID_DIR="\$APP_DIR/run"
-          SECRET_DIR="\$APP_DIR/secrets"
 
-          sudo mkdir -p "\$APP_DIR" "\$LOG_DIR" "\$PID_DIR" "\$SECRET_DIR"
-          sudo chown -R "\$USER:\$USER" "\$APP_DIR"
+          echo "============================================================"
+          echo "VM ASR upload bootstrap started"
+          echo "============================================================"
 
-          if [ ! -d "\$APP_DIR/.git" ]; then
-            rm -rf "\$APP_DIR"
-            git clone "${{ secrets.REPO_URL }}" "\$APP_DIR"
+          echo "Installing required packages if missing..."
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            git \
+            lsb-release \
+            python3 \
+            python3-venv \
+            python3-pip \
+            ffmpeg
+
+          echo "Preparing app directory: ${APP_DIR}"
+          sudo mkdir -p "${APP_DIR}"
+          sudo chown -R "$USER":"$USER" "${APP_DIR}"
+
+          if [ ! -d "${APP_DIR}/.git" ]; then
+            echo "Cloning repository..."
+            rm -rf "${APP_DIR:?}/"*
+            git clone "${REPO_CLONE_URL}" "${APP_DIR}"
+          else
+            echo "Repository already exists. Fetching latest changes..."
+            cd "${APP_DIR}"
+            git fetch --all
           fi
 
-          cd "\$APP_DIR"
+          cd "${APP_DIR}"
 
-          git fetch --all
-          git pull --ff-only
+          echo "Checking out branch: ${REPO_BRANCH}"
+          git checkout "${REPO_BRANCH}"
+          git pull origin "${REPO_BRANCH}"
 
+          echo "Creating persistent folders..."
+          mkdir -p credentials output logs run
+
+          echo "Writing GCP credentials file from GitHub secret..."
+          printf '%s' "${GCP_SA_KEY_JSON_B64}" | base64 -d > credentials/gcp-key.json
+          chmod 600 credentials/gcp-key.json
+
+          echo "Preparing Python environment..."
           python3 -m venv .venv
           . .venv/bin/activate
 
           pip install -U pip
           pip install -r requirements.txt
 
-          cat > .env.upload << ENVEOF
-          HF_TOKEN=${{ secrets.HF_TOKEN }}
-          GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }}
-          GOOGLE_APPLICATION_CREDENTIALS=/opt/asr-gcp-uploader/secrets/gcp-service-account.json
-          ENVEOF
+          TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+          LOG_FILE="logs/asr_upload_${TIMESTAMP}.log"
+          ENV_FILE="logs/asr_upload_${TIMESTAMP}.env"
+          PID_FILE="run/asr_upload.pid"
 
-          chmod 600 .env.upload
+          echo "Creating environment file: ${ENV_FILE}"
 
-          TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-          LOG_FILE="\$LOG_DIR/asr_upload_\$TIMESTAMP.log"
-          PID_FILE="\$PID_DIR/asr_upload.pid"
+          cat > "${ENV_FILE}" <<EOF
+          HF_TOKEN=${HF_TOKEN}
+          GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
+          GOOGLE_APPLICATION_CREDENTIALS=${APP_DIR}/credentials/gcp-key.json
+          EOF
 
-          CMD=". .venv/bin/activate && set -a && . .env.upload && set +a && python scripts/06_parallel_resumable_upload.py --config '${CONFIG_PATH}'"
+          sed -i 's/^[[:space:]]*//' "${ENV_FILE}"
+          chmod 600 "${ENV_FILE}"
+
+          CMD=". .venv/bin/activate && set -a && . '${ENV_FILE}' && set +a && python scripts/06_parallel_resumable_upload.py --config '${CONFIG_PATH}'"
 
           if [ -n "${ONLY_RUN_NAME}" ]; then
-            CMD="\$CMD --only-run-name '${ONLY_RUN_NAME}'"
+            CMD="${CMD} --only-run-name '${ONLY_RUN_NAME}'"
           fi
 
           if [ "${RESET_CHECKPOINT}" = "true" ]; then
-            CMD="\$CMD --reset-checkpoint"
+            CMD="${CMD} --reset-checkpoint"
           fi
 
           echo "Starting background upload..."
-          echo "Command: \$CMD"
-          echo "Log file: \$LOG_FILE"
+          echo "Command: ${CMD}"
+          echo "Log file: ${APP_DIR}/${LOG_FILE}"
 
-          setsid nohup bash -lc "\$CMD" > "\$LOG_FILE" 2>&1 < /dev/null &
-          PID=\$!
+          setsid nohup bash -lc "${CMD}" > "${LOG_FILE}" 2>&1 < /dev/null &
 
-          echo "\$PID" > "\$PID_FILE"
+          PID=$!
+          echo "${PID}" > "${PID_FILE}"
 
-          sleep 2
+          sleep 3
 
-          if ps -p "\$PID" > /dev/null 2>&1; then
+          echo "============================================================"
+
+          if ps -p "${PID}" > /dev/null 2>&1; then
             echo "Started ASR upload successfully."
-            echo "PID: \$PID"
-            echo "PID file: \$PID_FILE"
-            echo "Log file: \$LOG_FILE"
+            echo "PID: ${PID}"
+            echo "PID file: ${APP_DIR}/${PID_FILE}"
+            echo "Log file: ${APP_DIR}/${LOG_FILE}"
+            echo ""
+            echo "GitHub Action will now exit."
+            echo "The upload script will continue running on the VM."
           else
-            echo "Upload process failed to start. Last log lines:"
-            tail -100 "\$LOG_FILE" || true
+            echo "Upload process failed to start."
+            echo "Last log lines:"
+            tail -100 "${LOG_FILE}" || true
             exit 1
           fi
-          EOF
+
+          echo "============================================================"
+          echo "Initial log:"
+          tail -n 60 "${LOG_FILE}" || true
+          REMOTE_SCRIPT
