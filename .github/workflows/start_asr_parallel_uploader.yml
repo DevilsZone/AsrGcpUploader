@@ -145,6 +145,7 @@ jobs:
           cat > "${ENV_FILE}" <<EOF
           HF_TOKEN=${HF_TOKEN}
           GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
+          GCP_RUN_NAME=placeholder_run_name
           GOOGLE_APPLICATION_CREDENTIALS=${APP_DIR}/credentials/gcp-key.json
           PYTHONPATH=${APP_DIR}
           EOF
