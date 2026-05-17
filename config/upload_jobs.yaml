@@ -8,7 +8,7 @@ defaults:
   workers: 4
   batch_size: 128
   query_batch_size: 128
-  max_prefetch_batches: 10
+  max_prefetch_batches: 5
   query_qps: 2
   upload_qps: 30
 
