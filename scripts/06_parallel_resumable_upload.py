@@ -2,13 +2,13 @@ import argparse
 import gc
 import json
 import os
-import random
 import re
 import tempfile
 import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +38,27 @@ _thread_local = threading.local()
 
 
 class SimpleRateLimiter:
+    def __init__(self, qps: float | None):
+        self.qps = qps
+        self.min_interval = 1.0 / qps if qps and qps > 0 else 0.0
+        self.lock = threading.Lock()
+        self.next_allowed_time = 0.0
+
+    def wait(self) -> None:
+        if self.min_interval <= 0:
+            return
+
+        with self.lock:
+            now = time.monotonic()
+            sleep_for = self.next_allowed_time - now
+
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+                now = time.monotonic()
+
+            self.next_allowed_time = now + self.min_interval
+
+class BatchRateLimiter:
     def __init__(self, qps: float | None):
         self.qps = qps
         self.min_interval = 1.0 / qps if qps and qps > 0 else 0.0
@@ -285,6 +306,10 @@ def resolve_jobs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 merged.get("upload_state_to_gcs_every_batches", 5)
             ),
             "local_output_dir": str(merged.get("local_output_dir", "output")),
+            "job_parallelism": int(merged.get("job_parallelism", 1)),
+            "query_batch_size": int(merged.get("query_batch_size", 20)),
+            "query_qps": float(merged.get("query_qps", 0)),
+            "max_prefetch_batches": int(merged.get("max_prefetch_batches", 2)),
         }
 
         resolved_jobs.append(resolved)
@@ -354,24 +379,99 @@ def build_config_for_job(job: dict[str, Any]):
     )
 
 
-def iter_batches(stream, *, start_index: int, batch_size: int, limit: int | None):
-    batch = []
-    emitted = 0
+def convert_hf_batch_to_rows(
+    *,
+    hf_batch: dict[str, list[Any]],
+    start_index: int,
+) -> list[tuple[int, dict[str, Any]]]:
+    if not hf_batch:
+        return []
 
-    for offset, row in enumerate(stream):
+    first_key = next(iter(hf_batch))
+    batch_size = len(hf_batch[first_key])
+
+    rows = []
+
+    for row_offset in range(batch_size):
+        row = {
+            column_name: column_values[row_offset]
+            for column_name, column_values in hf_batch.items()
+        }
+        rows.append((start_index + row_offset, row))
+
+    return rows
+
+
+def iter_hf_batches(
+    *,
+    stream,
+    start_index: int,
+    query_batch_size: int,
+    limit: int | None,
+    query_qps: float,
+):
+    emitted = 0
+    next_index = start_index
+    limiter = BatchRateLimiter(query_qps if query_qps > 0 else None)
+
+    for hf_batch in stream.iter(batch_size=query_batch_size):
+        limiter.wait()
+
+        rows = convert_hf_batch_to_rows(
+            hf_batch=hf_batch,
+            start_index=next_index,
+        )
+
+        if limit is not None:
+            remaining = limit - emitted
+
+            if remaining <= 0:
+                break
+
+            rows = rows[:remaining]
+
+        if not rows:
+            break
+
+        emitted += len(rows)
+        next_index += len(rows)
+
+        yield rows
+
         if limit is not None and emitted >= limit:
             break
 
-        index = start_index + offset
-        batch.append((index, row))
-        emitted += 1
+def start_prefetch_thread(
+    *,
+    stream,
+    start_index: int,
+    query_batch_size: int,
+    limit: int | None,
+    query_qps: float,
+    max_prefetch_batches: int,
+):
+    queue: Queue = Queue(maxsize=max_prefetch_batches)
+    sentinel = object()
 
-        if len(batch) >= batch_size:
-            yield batch
-            batch = []
+    def producer():
+        try:
+            for batch in iter_hf_batches(
+                stream=stream,
+                start_index=start_index,
+                query_batch_size=query_batch_size,
+                limit=limit,
+                query_qps=query_qps,
+            ):
+                queue.put(batch)
+        except Exception as exception:
+            queue.put(exception)
+        finally:
+            queue.put(sentinel)
 
-    if batch:
-        yield batch
+    thread = threading.Thread(target=producer, daemon=True)
+    thread.start()
+
+    return queue, sentinel, thread
 
 
 def process_one_row(
@@ -547,6 +647,17 @@ def run_job(job: dict[str, Any], *, reset_checkpoint: bool, dry_run: bool) -> No
         checkpoint.setdefault("failed_count", 0)
 
     start_index = int(checkpoint.get("next_index", 0))
+
+    checkpoint["dataset_name"] = config.dataset_name
+    checkpoint["dataset_config"] = config.dataset_config
+    checkpoint["dataset_split"] = config.dataset_split
+    checkpoint["run_name"] = run_name
+    checkpoint.setdefault("processed_count", 0)
+    checkpoint.setdefault("failed_count", 0)
+    checkpoint.setdefault("last_completed_batch", None)
+    checkpoint["updated_at"] = utc_now_iso()
+    save_checkpoint(checkpoint_path, checkpoint)
+
     limit = None if int(job["limit"]) == -1 else int(job["limit"])
 
     print("=" * 100, flush=True)
@@ -587,13 +698,25 @@ def run_job(job: dict[str, Any], *, reset_checkpoint: bool, dry_run: bool) -> No
     failed_this_job = 0
     batch_number = 0
 
+    prefetch_queue, prefetch_sentinel, prefetch_thread = start_prefetch_thread(
+        stream=stream,
+        start_index=start_index,
+        query_batch_size=job["query_batch_size"],
+        limit=limit,
+        query_qps=job["query_qps"],
+        max_prefetch_batches=job["max_prefetch_batches"],
+    )
+
     try:
-        for batch in iter_batches(
-            stream,
-            start_index=start_index,
-            batch_size=job["batch_size"],
-            limit=limit,
-        ):
+        while True:
+            item = prefetch_queue.get()
+            if item is prefetch_sentinel:
+                break
+
+            if isinstance(item, Exception):
+                raise item
+
+            batch = item
             batch_number += 1
             batch_start = batch[0][0]
             batch_end = batch[-1][0]
@@ -661,6 +784,9 @@ def run_job(job: dict[str, Any], *, reset_checkpoint: bool, dry_run: bool) -> No
     print(f"Processed in this job run: {processed_this_job}", flush=True)
     print(f"Failed in this job run: {failed_this_job}", flush=True)
     print(f"Next index: {checkpoint['next_index']}", flush=True)
+    print(f"Query batch size: {job['query_batch_size']}", flush=True)
+    print(f"Query QPS: {job['query_qps']}", flush=True)
+    print(f"Max prefetch batches: {job['max_prefetch_batches']}", flush=True)
     print("=" * 100, flush=True)
 
 
@@ -677,12 +803,37 @@ def main() -> None:
         if not jobs:
             raise ValueError(f"No job found with run_name={args.only_run_name}")
 
-    random.shuffle(jobs)
-
     print(f"Resolved {len(jobs)} job(s).", flush=True)
 
-    for job in jobs:
-        run_job(job, reset_checkpoint=args.reset_checkpoint, dry_run=args.dry_run)
+    job_parallelism = max(1, int(jobs[0].get("job_parallelism", 1)))
+
+    print(f"Job parallelism: {job_parallelism}", flush=True)
+
+    if job_parallelism == 1:
+        for job in jobs:
+            run_job(job, reset_checkpoint=args.reset_checkpoint, dry_run=args.dry_run)
+    else:
+        with ThreadPoolExecutor(max_workers=job_parallelism) as executor:
+            future_to_job = {
+                executor.submit(
+                    run_job,
+                    job,
+                    reset_checkpoint=args.reset_checkpoint,
+                    dry_run=args.dry_run,
+                ): job
+                for job in jobs
+            }
+
+            for future in as_completed(future_to_job):
+                job = future_to_job[future]
+
+                try:
+                    future.result()
+                except Exception as exception:
+                    print(
+                        f"JOB FAILED run_name={job['run_name']}: {exception}",
+                        flush=True,
+                    )
 
     print("All selected jobs finished.", flush=True)
 

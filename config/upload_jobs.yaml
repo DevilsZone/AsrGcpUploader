@@ -4,8 +4,12 @@ defaults:
   local_output_dir: output
 
   # Requested settings
-  workers: 8
+  job_parallelism: 2
+  workers: 4
   batch_size: 128
+  query_batch_size: 128
+  max_prefetch_batches: 10
+  query_qps: 2
   upload_qps: 30
 
   gcs_timeout_seconds: 120
