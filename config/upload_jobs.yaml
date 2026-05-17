@@ -1,6 +1,6 @@
 defaults:
   dataset_name: ai4bharat/IndicVoices
-  split: valid
+  split: train
   local_output_dir: output
 
   # Requested settings
