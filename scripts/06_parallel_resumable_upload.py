@@ -491,7 +491,7 @@ def process_batch(
             try:
                 manifest_row = future.result()
                 manifest_rows.append(manifest_row)
-                print(f"SUCCESS index={index}", flush=True)
+                print(f"RUN={run_name}, SUCCESS index={index}", flush=True)
             except Exception as exception:
                 failure_rows.append(
                     {
@@ -500,7 +500,7 @@ def process_batch(
                         "failed_at": utc_now_iso(),
                     }
                 )
-                print(f"FAILED index={index}: {exception}", flush=True)
+                print(f"RUN={run_name}, FAILED index={index}: {exception}", flush=True)
 
     manifest_rows.sort(key=lambda item: item["source_index"])
     failure_rows.sort(key=lambda item: item["source_index"])

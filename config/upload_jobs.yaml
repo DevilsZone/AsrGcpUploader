@@ -4,7 +4,7 @@ defaults:
   local_output_dir: output
 
   # Requested settings
-  workers: 3
+  workers: 8
   batch_size: 128
   upload_qps: 30
 
@@ -20,88 +20,88 @@ defaults:
 jobs:
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/assamese
     dataset_config: assamese
-    run_name: ai4bharat_indicvoices_assamese_valid
+    run_name: ai4bharat_indicvoices_assamese_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/bengali
     dataset_config: bengali
-    run_name: ai4bharat_indicvoices_bengali_valid
+    run_name: ai4bharat_indicvoices_bengali_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/bodo
     dataset_config: bodo
-    run_name: ai4bharat_indicvoices_bodo_valid
+    run_name: ai4bharat_indicvoices_bodo_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/dogri
     dataset_config: dogri
-    run_name: ai4bharat_indicvoices_dogri_valid
+    run_name: ai4bharat_indicvoices_dogri_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/gujarati
     dataset_config: gujarati
-    run_name: ai4bharat_indicvoices_gujarati_valid
+    run_name: ai4bharat_indicvoices_gujarati_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/hindi
     dataset_config: hindi
-    run_name: ai4bharat_indicvoices_hindi_valid
+    run_name: ai4bharat_indicvoices_hindi_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/kannada
     dataset_config: kannada
-    run_name: ai4bharat_indicvoices_kannada_valid
+    run_name: ai4bharat_indicvoices_kannada_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/kashmiri
     dataset_config: kashmiri
-    run_name: ai4bharat_indicvoices_kashmiri_valid
+    run_name: ai4bharat_indicvoices_kashmiri_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/konkani
     dataset_config: konkani
-    run_name: ai4bharat_indicvoices_konkani_valid
+    run_name: ai4bharat_indicvoices_konkani_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/maithili
     dataset_config: maithili
-    run_name: ai4bharat_indicvoices_maithili_valid
+    run_name: ai4bharat_indicvoices_maithili_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/malayalam
     dataset_config: malayalam
-    run_name: ai4bharat_indicvoices_malayalam_valid
+    run_name: ai4bharat_indicvoices_malayalam_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/manipuri
     dataset_config: manipuri
-    run_name: ai4bharat_indicvoices_manipuri_valid
+    run_name: ai4bharat_indicvoices_manipuri_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/marathi
     dataset_config: marathi
-    run_name: ai4bharat_indicvoices_marathi_valid
+    run_name: ai4bharat_indicvoices_marathi_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/nepali
     dataset_config: nepali
-    run_name: ai4bharat_indicvoices_nepali_valid
+    run_name: ai4bharat_indicvoices_nepali_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/odia
     dataset_config: odia
-    run_name: ai4bharat_indicvoices_odia_valid
+    run_name: ai4bharat_indicvoices_odia_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/punjabi
     dataset_config: punjabi
-    run_name: ai4bharat_indicvoices_punjabi_valid
+    run_name: ai4bharat_indicvoices_punjabi_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/sanskrit
     dataset_config: sanskrit
-    run_name: ai4bharat_indicvoices_sanskrit_valid
+    run_name: ai4bharat_indicvoices_sanskrit_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/santali
     dataset_config: santali
-    run_name: ai4bharat_indicvoices_santali_valid
+    run_name: ai4bharat_indicvoices_santali_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/sindhi
     dataset_config: sindhi
-    run_name: ai4bharat_indicvoices_sindhi_valid
+    run_name: ai4bharat_indicvoices_sindhi_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/tamil
     dataset_config: tamil
-    run_name: ai4bharat_indicvoices_tamil_valid
+    run_name: ai4bharat_indicvoices_tamil_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/telugu
     dataset_config: telugu
-    run_name: ai4bharat_indicvoices_telugu_valid
+    run_name: ai4bharat_indicvoices_telugu_train
 
   - url: https://huggingface.co/datasets/ai4bharat/IndicVoices/viewer/urdu
     dataset_config: urdu
-    run_name: ai4bharat_indicvoices_urdu_valid
+    run_name: ai4bharat_indicvoices_urdu_train
