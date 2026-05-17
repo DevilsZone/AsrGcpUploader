@@ -5,11 +5,11 @@ defaults:
 
   # Requested settings
   job_parallelism: 2
-  workers: 4
+  workers: 2
   batch_size: 128
   query_batch_size: 128
   max_prefetch_batches: 5
-  query_qps: 2
+  query_qps: 20
   upload_qps: 30
 
   gcs_timeout_seconds: 120
