@@ -5,7 +5,7 @@ defaults:
 
   # Requested settings
   job_parallelism: 1
-  workers: 8
+  workers: 5
   batch_size: 128
   query_batch_size: 128
   max_prefetch_batches: 5
